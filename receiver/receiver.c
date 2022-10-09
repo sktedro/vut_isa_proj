@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <sys/stat.h>
 
 // Networking libraries
 #include <arpa/inet.h>
@@ -19,6 +20,7 @@
 #include "dns_receiver_events.h"
 
 
+// https://opensource.apple.com/source/netinfo/netinfo-208/common/dns.h.auto.html
 struct dns_header_t{
     u_int16_t xid;
     u_int16_t flags;
@@ -32,28 +34,38 @@ struct dns_header_t{
 
 /*
  *
- * Global variables
+ * GLOBAL VARIABLES
  *
  */
 
 
-char *base_host = NULL;
-char *dst_filepath = NULL;
+char *BASE_HOST = NULL;
+char *DST_FILEPATH = NULL; // Folder where to save files
 
-char **DATA = NULL;
-int DATA_SIZE = 0;
+char *DST_PATH = NULL; // Real path where to save the net file
+char *DATA_B64 = NULL;
+int DATA_B64_SIZE = 0;
+int DATA_B64_LEN = 0;
+
 
 /*
  *
- * Misc functions
+ * MISCELLANEOUS
  *
  */
 
 
-
 /**
+ * @brief Variables and functions for decoding a string from base64
  *
- * https://stackoverflow.com/a/6782480/17580261
+ * @param data to decode
+ * @param input_length in characters
+ * @param output_length - pointer where the output length in chars will be
+ * written
+ *
+ * @return allocated string containing the output
+ *
+ * Taken and modified from: https://stackoverflow.com/a/6782480/17580261
  */
 static char encoding_table[] = {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
     'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
@@ -110,7 +122,17 @@ void base64_cleanup() {
     free(decoding_table);
 }
 
+
+/**
+ * @brief Free all resources, write the error message to stdout and exit
+ *
+ * @param As for printf and similar functions
+ */
 void err(char *format, ...){
+    free(DST_PATH);
+    free(DATA_B64);
+    free(decoding_table);
+
     fprintf(stderr, "Error! ");
     va_list argptr;
     va_start(argptr, format);
@@ -121,25 +143,36 @@ void err(char *format, ...){
 }
 
 
-
 /*
  *
- * Parsing arguments and getting required data
+ * PARSING ARGUMENTS
  *
  */
 
+
+/*
+ * @brief Save arguments or raise an error
+ *
+ * @param argc
+ * @param argc
+ */
 void parse_args(int argc, char **argv){
     if(argc != 3){
         err("Invalid amount of arguments");
     }
-    base_host = argv[1];
-    dst_filepath = argv[2];
+    BASE_HOST = argv[1];
+    DST_FILEPATH = argv[2];
 }
 
+
+/**
+ * @brief Check arguments validity - check if destination file path exists and
+ * if the base host is a valid url
+ */
 void check_args(){
     // Check if base host is valid
-    for(int i = 0, n = strlen(base_host); i < n; i++){
-        char c = base_host[i];
+    for(int i = 0, n = strlen(BASE_HOST); i < n; i++){
+        char c = BASE_HOST[i];
         // Check if it is a character that can be in a host name (alphanumeric,
         // '.' and '-')
         if(c != 46 && c != 45 && !(c >= 48 && c <= 57) && !(c <= 65 && c <= 90) && !(c >= 97 && c <= 122)){
@@ -148,15 +181,88 @@ void check_args(){
         }
     }
 
-    // Check if destination path is valid (src path will be checked when
-    // opening)
-    char forbidden_chars[] = "#%&{}\\<>*?$!'\":@+`|=";
-    int forbidden_chars_len = strlen(forbidden_chars);
-    for(int i = 0, n = strlen(dst_filepath); i < n; i++){
-        for(int j = 0; j < forbidden_chars_len; j++){
-            if(dst_filepath[i] == forbidden_chars[j]){
-                err("Destination path contains forbidden characters: \'%c\'.", forbidden_chars[j]);
-                exit(1);
+    struct stat sb;
+    if(stat(DST_FILEPATH, &sb) != 0 || !S_ISDIR(sb.st_mode)){
+        err("Destination path invalid or doesn't exist.");
+    }
+}
+
+
+/*
+ *
+ * RECEIVING, PARSING AND SAVING DATA
+ *
+ */
+
+
+/**
+ * @brief Extract b64 payload from a packet received
+ *
+ * @param payload_b64 - pointer where to save the payload
+ * @param buffer - packet
+ * @param buffer_len - packet length in bytes
+ */
+void get_payload(char *payload_b64, char *buffer, int buffer_len){
+
+    // Skip the header to get to the question
+    unsigned char *query_tmp_ptr = &buffer[sizeof(struct dns_header_t)];
+
+    // Get the question URL
+    unsigned char url[512] = {'\0'};
+    while(1){
+
+        // Get label length: first byte
+        u_int8_t label_len = (u_int8_t)(*query_tmp_ptr);
+        query_tmp_ptr += 1;
+
+        // If label length is zero, this is end of labels
+        if(label_len == 0){
+            break;
+        }
+
+        // Otherwise, write the label to 'url'
+        for(int i = 0; i < label_len; i++){
+            url[strlen(url)] = *query_tmp_ptr;
+            query_tmp_ptr += 1;
+        }
+        url[strlen(url)] = '.';
+    }
+    url[strlen(url) - 1] = '\0'; // Remove the trailing '.'
+
+    // Check the domain - compare url and base host by characters from the
+    // end
+    int equal = 1;
+    for(int BASE_HOST_i = strlen(BASE_HOST) - 1, url_i = strlen(url) - 1;
+            BASE_HOST_i >= 0 && url_i >= 0; 
+            BASE_HOST_i--, url_i--){
+        if(BASE_HOST[BASE_HOST_i] != url[url_i]){
+            equal = 0;
+            break;
+        }
+    }
+    if(!equal){
+        // If the domain is not what the user set up, ignore this packet
+        continue;
+    }
+
+    // Get the real payload, without the domain - iter from the end, char
+    // by char and only start copying characters after encountering the
+    // second '.'. Then, still ignore the '.' characters
+    int ignore = 2;
+    for(int i = strlen(url) - 1; i >= 0; i--){
+        if(url[i] == '.' && ignore){
+            ignore -= 1;
+        }
+        if(!ignore){
+            payload_b64[i] = url[i];
+        }
+    }
+
+    // Remove all '.' from the labels
+    for(int i = 0; i < strlen(payload_b64); i++){
+        if(payload_b64[i] == '.'){
+            for(int j = i; j < strlen(payload_b64); j++){
+                payload_b64[j] = payload_b64[j + 1];
             }
         }
     }
@@ -165,189 +271,188 @@ void check_args(){
 
 
 
+/**
+ * @param Handle the first packet of a communication - extract the payload
+ * (path, where to save the upcoming data), save it and prepare everything for
+ * the communication
+ *
+ * @param payload_b64 - base64 payload in the packet
+ */
+void handle_first_payload(char *payload_b64){
+    
+    // Add padding back to the b64 and decode it
+    while(strlen(payload_b64) % 4 != 0){
+        payload_b64[strlen(payload_b64)] = '=';
+    }
+    int payload_len = 0;
+    char *payload = base64_decode(payload_b64, strlen(payload_b64), &payload_len);
+
+    // Fill the DST_PATH variable
+    DST_PATH = malloc(512);
+    if(!DST_PATH){
+        err("Could not allocate memory");
+    }
+    strcpy(DST_PATH, DST_FILEPATH);
+    DST_PATH[strlen(DST_PATH)] = '/';
+    strncpy(DST_PATH + strlen(DST_PATH), payload, payload_len);
+
+    free(payload);
+
+    // Allocate DATA_B64 var
+    if(!DATA_B64){
+        DATA_B64 = malloc(512);
+        if(!DATA_B64){
+            err("Failed to allocate memory");
+        }
+        DATA_B64_SIZE = 512;
+        DATA_B64_LEN = 0;
+    }
+}
+
+/**
+ * @brief Handles a payload which is not the first and not the last packet - so
+ * just append the payload to DATA_B64 string, which will be decoded and saved
+ * to file at the end
+ *
+ * @param payload_b64 - payload in the packet, encoded in base64
+ */
+void handle_next_payload(char *payload_b64){
+
+    // Realloc DATA_B64 if it's too small
+    if(DATA_B64_SIZE <= DATA_B64_LEN + strlen(payload_b64) + 8){ // 8 for future b64 padding, null byte, ...
+        DATA_B64 = realloc(DATA_B64, DATA_B64_SIZE * 2);
+        if(!DATA_B64){
+            err("Failed to allocate memory.");
+        }
+        DATA_B64_SIZE *= 2;
+    }
+    printf("b64 p: %s\n", payload_b64);
+
+    // Copy payload to DATA_B64
+    strcpy(DATA_B64 + DATA_B64_LEN, payload_b64);
+    DATA_B64_LEN += strlen(payload_b64);
+}
+
+
+/**
+ * @param Handle the final message of a communication - decode the received
+ * data, save it to a provided file and free all resources
+ */
+void handle_fin_msg(){
+    // Add padding back to the b64
+    while(strlen(DATA_B64) % 4 != 0){
+        DATA_B64[strlen(DATA_B64)] = '=';
+    }
+    printf("all b64: %s\n", DATA_B64);
+
+    // Decode b64 data and write it to a file
+    int data_len = 0;
+    char *data = base64_decode(DATA_B64, DATA_B64_LEN, &data_len);
+
+    printf("data:");
+    for(int i = 0; i < data_len; i++)
+        printf("%c", data[i]);
+    printf("\n");
+
+    // Save to file
+    FILE *f = fopen(DST_PATH, "w");
+    if(!f){
+        err("Could not open destination file");
+    }
+    for(int i = 0; i < data_len; i++){
+        if(data[i] != '\0'){
+            fputc(data[i], f);
+        }
+    }
+    fclose(f);
+
+    free(data);
+    free(DST_PATH);
+    DST_PATH = NULL;
+    free(DATA_B64);
+    DATA_B64 = NULL;
+    DATA_B64_SIZE = 0;
+    DATA_B64_LEN = 0;
+}
+
+
+/*
+ *
+ * MAIN
+ *
+ */
 
 
 int main(int argc, char **argv){
 
+    // Parse and check args
     parse_args(argc, argv);
     check_args();
 
-
+    // Create a socket
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if(!sock){
+    if(sock == -1){
         err("Failed to open socket");
     }
+
+    // Set reuse address option
+    int optval = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const void *)&optval , sizeof(int));
 
     // Bind socket to port 53
     struct sockaddr_in server;
     server.sin_family = AF_INET;
-    /** server.sin_addr.s_addr = INADDR_ANY; */
-    server.sin_addr.s_addr = inet_addr("127.0.0.1");
+    server.sin_addr.s_addr = htonl(INADDR_ANY);
     server.sin_port = htons(53); // DNS port = 53
-    if(bind(sock, (struct sockaddr *)(&server), sizeof(server))){
+    if(bind(sock, (struct sockaddr *)&server, sizeof(server))){
         err("Failed to bind socket to port 53.\n");
     }
 
+    // Prep client address
+    struct sockaddr_in client;
+    int client_len = sizeof(client);
+
+    // Prep buffer
+    unsigned char buffer[512];
+
+    int first_packet_received = 0; // 1 if there is an open communication
+
     // Receive in a loop
-    unsigned char buffer[512] = {'\0'};
-    int received_fin_msg = 0;
     while(1){
 
-        struct sockaddr client;
-
         // Receive
-        int client_len = sizeof(client);
-        int datagram_len = recvfrom(sock, &buffer, 512, 0, &client, &client_len);
+        int buffer_len = recvfrom(sock, buffer, 512, 0, (struct sockaddr *)&client, &client_len);
 
-        // Skip the header to get to the query
-        unsigned char *query_tmp_ptr = &buffer[sizeof(struct dns_header_t)];
+        // Get payload in b64 from the packet
+        unsigned char payload_b64[256] = {'\0'};
+        get_payload(payload_b64, buffer, buffer_len);
 
-        // Max 4 labels, label max len = 63 bytes
-        char labels[4][64] = {'\0', '\0', '\0', '\0'};
-        int labels_amount = 0;
+        if(!first_packet_received){
+            // We received a destination file path - decode and save it
+            handle_first_payload(payload_b64);
+            first_packet_received = 1;
 
-        // Parse labels (max 4)
-        for(int i = 0; i < 4; i++){
+        }else if(strlen(payload_b64)){
+            // If this is not empty - not a fin message, it is just the next
+            // payload to save
+            handle_next_payload(payload_b64);
 
-            u_int8_t label_len = *((u_int8_t*)query_tmp_ptr);
-
-            // In case there are less than 4 labels
-            if(label_len == 0){
-                break;
-            }
-
-            // Copy label
-            for(int j = 0; j < label_len; j++){
-                labels[i][j] = query_tmp_ptr[1 + j];
-            }
-            query_tmp_ptr += 1 + label_len;
-
-            labels_amount += 1;
+        }else{
+            // If the message is empty, it is the fin message (connection
+            // close)
+            handle_fin_msg();
+            first_packet_received = 0;
         }
 
-        printf("Labels: %s.%s.%s.%s\n", labels[0], labels[1], labels[2], labels[3]);
-
-        // Check if last two labels are the same as base_host. If not, ignore
-        // this packet
-        char tmp[256] = {'\0'};
-        strcpy(tmp, labels[labels_amount - 2]);
-        tmp[strlen(tmp)] = '.';
-        strcat(tmp, labels[labels_amount - 1]);
-        if(strcmp(tmp, base_host)){
-            continue;
-        }
-
-        // Get data
-        char data_b64[127] = {'\0'};
-        strcpy(data_b64, labels[0]);
-        if(labels_amount == 4){
-            // If we have 4 labels, two of them contain data
-            strcat(data_b64, labels[1]);
-        }
-
-        printf("Data b64: %s\n", data_b64);
-
-        // Decode the data
-        int data_len = 0;
-        char *data = base64_decode(data_b64, strlen(data_b64), &data_len);
-        printf("Decoded: ");
-        for(int i = 0; i < data_len; i++){
-            printf("%c", data[i]);
-        }
-        printf("\n");
-
-
-        // Get prefix
-        char prefix[32] = {'\0'};
-        for(int i = 0; i < 32; i++){
-            if(data[i] == '-'){
-                break;
-            }
-            prefix[i] = data[i];
-        }
-
-        // Get datagram ID from prefix
-        int dg_id = strtol(prefix, NULL, 10);
-
-        // If the payload is empty, set received_fin_msg to true
-        received_fin_msg = 1;
-
-        // Save the datagram payload to DATA
-        if(!DATA){
-            DATA = malloc(sizeof(char *) * 2);
-            DATA_SIZE = 2;
-            DATA[0] = NULL;
-            DATA[1] = NULL;
-        }
-        // If DATA is too short for this datagram, realloc
-        if(DATA_SIZE < dg_id + 1){
-            DATA = realloc(data, DATA_SIZE * 2);
-            // Set new elements to NULL
-            for(int i = DATA_SIZE; i < DATA_SIZE * 2; i++){
-                DATA[i] = NULL;
-            }
-            DATA_SIZE *= 2;
-        }
-        if(DATA[dg_id]){
-            err("Received a second datagram with the same ID. Communication is compromised.");
-        }
-        DATA[dg_id] = malloc(sizeof(char) * (data_len - strlen(prefix) + 1));
-        strcpy(DATA[dg_id], data + strlen(prefix));
-
-        // If we have all messages, we can save them to a file
-
-        if(received_fin_msg){
-
-            // Get the highest ID of all datagrams received
-            int last_dg_index = dg_id;
-            for(int i = last_dg_index; i < DATA_SIZE; i++){
-                if(DATA[i]){
-                    last_dg_index = i;
-                }
-            }
-
-            int all_datagrams_received = 1;
-            for(int i = 0; i < last_dg_index; i++){
-                if(!DATA[i]){
-                    all_datagrams_received = 0;
-                    break;
-                }
-            }
-
-            if(all_datagrams_received){
-
-                // TODO send answer
-
-                // TODO read where to save
-
-                // TODO save to file
-                
-                // TODO free DATA var
-                for(int i = 0; i < DATA_SIZE; i++){
-                    free(DATA[i]);
-                }
-                free(DATA);
-
-                received_fin_msg = 0;
-
-            }
-        }
-        
-
-
-
-
-        /** sendto(sock,&Reply,ReplyLen,0,&client,client_len); */
-
+        // TODO Send confirmation response - the same packet as received should
+        // suffice I guess
+        int sent_len = sendto(sock, &buffer, buffer_len, MSG_CONFIRM, (struct sockaddr *)&client, client_len);
     }
 
-
-
-
-
-
-
-
+    // Clear resources
+    free(DST_PATH);
+    free(DATA_B64);
+    free(decoding_table);
 
     return 0;
 }

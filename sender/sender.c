@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <sys/time.h>
 
 // Networking libraries
 #include <arpa/inet.h>
@@ -19,7 +20,10 @@
 #include "dns_sender_events.h"
 
 
-// https://opensource.apple.com/source/netinfo/netinfo-208/common/dns.h.auto.html
+/**
+ * DNS header structure
+ * https://opensource.apple.com/source/netinfo/netinfo-208/common/dns.h.auto.html
+ */
 struct dns_header_t{
     u_int16_t xid;
     u_int16_t flags;
@@ -28,6 +32,11 @@ struct dns_header_t{
     u_int16_t nscount;
     u_int16_t arcount;
 };
+
+/**
+ * DNS question structure
+ * https://opensource.apple.com/source/netinfo/netinfo-208/common/dns.h.auto.html
+ */
 struct dns_question_info_t{
     u_int16_t type;
     u_int16_t class;
@@ -36,32 +45,43 @@ struct dns_question_info_t{
 
 /*
  *
- * Global variables
+ * GLOBAL VARIABLES
  *
  */
 
 
-char *UPSTREAM_DNS_IP = NULL;
-char *BASE_HOST = NULL;
-char *DST_FILEPATH = NULL;
-char *SRC_FILEPATH = NULL;
+const int MAX_TRIES = 3; // Max tries for sending a packet
 
-FILE *SRC_FILE = NULL;
+char *UPSTREAM_DNS_IP = NULL; // IP of DNS server provided by the user
+char *UPSTREAM_DNS_IP_MALLOCD = NULL; // IP of DNS server from the system (if user didn't provide one)
+char *BASE_HOST = NULL; // Hostname to use when sending a DNS request
+char *DST_FILEPATH = NULL; // Path where to save the data on the server machine
+char *SRC_FILEPATH = NULL; // Path to a file to send (null if file not provided)
 
-char *PAYLOAD = NULL;
-char *PAYLOAD_B64 = NULL;
+FILE *SRC_FILE = NULL; // Open file or stdin
+
+char *PAYLOAD_B64 = NULL; // Payload to send, encoded in base64, without padding
+int PAYLOAD_B64_LEN = 0; // Length of payload in bytes
 
 
 /*
  *
- * Misc functions
+ * MISCELLANEOUS
  *
  */
 
 
 /**
+ * @brief Variables and functions for encoding a string to base64
  *
- * https://stackoverflow.com/a/6782480/17580261
+ * @param data to encode
+ * @param input_length in characters
+ * @param output_length - pointer where the output length in chars will be
+ * written
+ *
+ * @return allocated string containing the output
+ *
+ * Taken and modified from: https://stackoverflow.com/a/6782480/17580261
  */
 static char encoding_table[] = {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
                                 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
@@ -96,6 +116,7 @@ char *base64_encode(const unsigned char *data,
     }
 
     /**
+      * Do not pad with '=', since it is forbidden in URL
       * for (int i = 0; i < mod_table[input_length % 3]; i++)
       *     encoded_data[*output_length - 1 - i] = '=';
       */
@@ -104,16 +125,18 @@ char *base64_encode(const unsigned char *data,
 }
 
 
+/**
+ * @brief Free all resources, write the error message to stdout and exit
+ *
+ * @param As for printf and similar functions
+ */
 void err(char *format, ...){
     if(SRC_FILE){
         fclose(SRC_FILE);
     }
-    if(PAYLOAD){
-        free(PAYLOAD);
-    }
-    if(PAYLOAD_B64){
-        free(PAYLOAD_B64);
-    }
+    free(UPSTREAM_DNS_IP_MALLOCD);
+    free(PAYLOAD_B64);
+
     fprintf(stderr, "Error! ");
     va_list argptr;
     va_start(argptr, format);
@@ -123,33 +146,46 @@ void err(char *format, ...){
     exit(1);
 }
 
+
 /*
  *
- * Parsing arguments and getting required data
+ * PARSING ARGUMENTS AND PREPARING DATA
  *
  */
-
-
-
 
 
 /**
- * @brief If the user didn't provide the upstream DNS IP, get it somehow else
- * because we need it... (I suppose)
- * TODO
+ * @brief Get upstream DNS IP address from the system's /etc/resolv.conf and
+ * save it to UPSTREAM_DNS_IP_MALLOCD (allocate it first)
  */
-void get_UPSTREAM_DNS_IP(){
-    // Get it from system resolvers
+void get_upstream_dns_ip(){
+    
+    FILE *f = fopen("/etc/resolv.conf", "r");
+    if(!f){
+        err("\"/etc/resolv.conf\" could not be opened.");
+    }
+
+    char buffer[1024];
+    while(fgets(buffer, 1024, f) != NULL){
+        if(!strncmp(buffer, "nameserver ", strlen("nameserver "))){
+            break;
+        }
+    }
+    UPSTREAM_DNS_IP_MALLOCD = malloc(17 * sizeof(char));
+    if(!UPSTREAM_DNS_IP_MALLOCD){
+        err("Malloc failed");
+    }
+    strcpy(UPSTREAM_DNS_IP_MALLOCD, buffer + strlen("nameserver "));
+
+    fclose(f);
 }
 
 
 /**
- * @brief Parse user provided options to a structure
+ * @brief Parse user provided options and save settings to global variables
  *
  * @param argc
  * @param argv
- *
- * @return struct options
  */
 void parse_args(int argc, char **argv){
 
@@ -191,7 +227,10 @@ void parse_args(int argc, char **argv){
 }
 
 
-
+/**
+ * @brief Validate arguments provided by the user: check if everything is
+ * specified and in the right format. If not, raise an error.
+ */
 void check_args(){
     if(!BASE_HOST || !DST_FILEPATH){
         // If base host or dst filepath were not provided -> error
@@ -201,7 +240,7 @@ void check_args(){
 
     if(!UPSTREAM_DNS_IP){
         // If no upstream DNS IP was provided in args, generate it or something
-        get_UPSTREAM_DNS_IP();
+        get_upstream_dns_ip();
 
     }else{
         // Else, check if the IP is valid
@@ -239,8 +278,10 @@ void check_args(){
 }
 
 
-
-
+/**
+ * @brief Read from the provided file to send or from STDIN to then encode it
+ * to base64 and save it to a global variable
+ */
 void get_payload(){
 
     // Set source file to stdin or provided path
@@ -252,8 +293,8 @@ void get_payload(){
     // Prepare payload string
     int payload_size = 1024;
     int payload_len = 0;
-    PAYLOAD = malloc(payload_size);
-    if(!PAYLOAD){
+    char *payload = malloc(payload_size);
+    if(!payload){
         err("Allocating memory failed.");
     }
 
@@ -267,12 +308,12 @@ void get_payload(){
         // Realloc if the payload is filled
         if(payload_len + 4 > payload_size){
             payload_size *= 2;
-            PAYLOAD = realloc(PAYLOAD, payload_size);
+            payload = realloc(payload, payload_size);
         }
 
         // Save the new char
-        PAYLOAD[payload_len] = c;
-        PAYLOAD[payload_len + 1] = '\0';
+        payload[payload_len] = c;
+        payload[payload_len + 1] = '\0';
         payload_len += 1;
     }
 
@@ -281,203 +322,319 @@ void get_payload(){
     SRC_FILE = NULL;
 
 
-    printf("Payload: %s\n", PAYLOAD);
+    printf("Payload: %s\n", payload);
     // Encode payload to base64
-    int PAYLOAD_B64_len = 0;
-    PAYLOAD_B64 = base64_encode(PAYLOAD, strlen(PAYLOAD), &PAYLOAD_B64_len);
+    PAYLOAD_B64 = base64_encode(payload, strlen(payload), &PAYLOAD_B64_LEN);
     if(!PAYLOAD_B64){
         err("Failed to convert input to base64");
     }
     printf("Base64: ");
-    for(int i = 0; i < PAYLOAD_B64_len; i++){
+    for(int i = 0; i < PAYLOAD_B64_LEN; i++){
         printf("%c", PAYLOAD_B64[i]);
     }
     printf("\n");
 
+    free(payload);
+    payload = NULL;
 }
 
 
+/*
+ *
+ * TRANSMITTING AND RECEIVING DATA
+ *
+ */
 
 
+/**
+ * @brief Construct a DNS packet containing data provided to buffer and save its
+ * length to buffer_len. 
+ *
+ * @param buffer - allocated output string
+ * @param buffer_len - pointer to an integer - will contain packet length in
+ * bytes
+ * @param data - data to encapsulate in the packet
+ * @param len - length of the data in bytes
+ */
+void create_packet(unsigned char *buffer, int *buffer_len, char *data, int len){
+
+    // Create a DNS header
+    struct dns_header_t *header = (struct dns_header_t *)buffer;
+    header->xid = htons(9999); // Query ID (random)
+    header->flags = htons(256); // 00000001 00000000b = 256: Standard query, desire recursion
+    header->qdcount = htons(1); // Number of questions
+    // Leave ancount (answers), nscount (authority RRs) and arcount (additional
+    // RRs) as 0
+
+    // Get pointer to question in the buffer (right after the header)
+    unsigned char *question_tmp_ptr = &buffer[sizeof(struct dns_header_t)];
+
+    // Label 1
+    int len1 = len > 63 ? 63 : len;
+    if(len1){
+        *question_tmp_ptr = (unsigned char)len1;
+        question_tmp_ptr += 1;
+        for(int i = 0; i < len1; i++){
+            question_tmp_ptr[i] = data[i];
+        }
+        question_tmp_ptr += len1;
+    }
+    
+    // Label 2
+    int len2 = len > 63 ? len - 63 : 0;
+    if(len2){
+        *question_tmp_ptr = (unsigned char)len2;
+        question_tmp_ptr += 1;
+        for(int i = 63; i < 63 + len2; i++){
+            question_tmp_ptr[i - 63] = data[i];
+        }
+        question_tmp_ptr += len2;
+    }
+
+    int BASE_HOST_i = 0;
+
+    // Domain name
+    unsigned char *name_len_byte = question_tmp_ptr;
+    question_tmp_ptr += 1;
+    for( ; BASE_HOST[BASE_HOST_i] != '.'; BASE_HOST_i++){
+        *question_tmp_ptr = BASE_HOST[BASE_HOST_i];
+        question_tmp_ptr += 1;
+    }
+    *name_len_byte = (unsigned char)(question_tmp_ptr - name_len_byte - 1);
+
+    BASE_HOST_i += 1; // Skip the '.'
+
+    // Domain extension
+    unsigned char *extension_len_byte = question_tmp_ptr;
+    question_tmp_ptr += 1;
+    for( ; BASE_HOST[BASE_HOST_i] != '\0'; BASE_HOST_i++){
+        *question_tmp_ptr = BASE_HOST[BASE_HOST_i];
+        question_tmp_ptr += 1;
+    }
+    *extension_len_byte = (unsigned char)(question_tmp_ptr - extension_len_byte - 1);
+
+    // Terminate with zero byte
+    *question_tmp_ptr = (unsigned char)'\0';
+    question_tmp_ptr += 1;
+
+    // Set type and class of the DNS query
+    struct dns_question_info_t *question_info_ptr
+        = (struct dns_question_info_t *)question_tmp_ptr;
+    question_info_ptr->type = htons(1); // Type is A - host address
+    question_info_ptr->class = htons(1); // Class is internet address
+    question_tmp_ptr += 4;
+
+    *buffer_len = question_tmp_ptr - buffer;
+}
 
 
+/**
+ * @brief Send a packet through a socket to provided address
+ *
+ * @param sock - UDP socket
+ * @param addr - sockaddr_in structure representing destination address
+ * @param data - packet
+ * @param len - packet length in bytes
+ */
+void send_packet(int sock, struct sockaddr_in addr, unsigned char *data, int len){
+    int ret = sendto(sock, (char *)data, len, 0, (struct sockaddr *)&addr, sizeof(addr));
+    if(ret != len){
+        err("Failed to send a packet.");
+    }
+}
 
 
+/**
+ * @brief Receives data from the server. If no data is received (after a
+ * constant timeout), return 1. Otherwise, return 0 since the confirmation was
+ * received.
+ *
+ * @param sock - socket
+ * @param addr - server address
+ *
+ * @return 0 if confirmation was received
+ */
+int wait_for_confirmation(int sock, struct sockaddr_in addr){
+    char buffer[512] = {'\0'};
+    int addr_len = sizeof(addr);
+    int len = recvfrom(sock, buffer, 512, 0, (struct sockaddr *)&addr, &addr_len);
+    return len > 0 ? 0 : 1;
+}
 
 
+/**
+ * @brief Send an empty packet and ensure it is received. Try for a total of
+ * MAX_TRIES if no confirmation is received from the server.
+ *
+ * @param sock - socket
+ * @param addr - server address
+ *
+ * @return 0 if empty packet was sent successfully
+ */
+int ensure_send_empty(int sock, struct sockaddr_in addr){
+    for(int i = 0; i < MAX_TRIES; i++){
+        char packet[512] = {'\0'};
+        int packet_len = 0;
+        create_packet(packet, &packet_len, "", 0);
+        send_packet(sock, addr, packet, packet_len);
+        if(!wait_for_confirmation(sock, addr)){
+            return 0;
+        }
+    }
+    return 1;
+}
 
 
+/**
+ * @brief Wait for confirmation (of packet receival) from the server. If none
+ * comes, ensure that the server receives an empty message to close the
+ * connection.
+ *
+ * @param sock - socket
+ * @param addr - server address
+ *
+ * @return 0 if confirmation was received, 1 if a packet confirmation was not
+ * received but connection was successfully closed, -1 if connection close
+ * confirmation was not received
+ */
+int handle_confirmation(int sock, struct sockaddr_in addr){
+    int ret = wait_for_confirmation(sock, addr);
+    if(ret){
+        // If we didn't receive the confirmation, send empty packet to finalize the
+        // transfer and try to transfer again, from the start
+        ret = ensure_send_empty(sock, addr);
+        if(!ret){
+            return 1;
+        }else{
+            return -1;
+        }
+
+    }
+    return 0;
+}
 
 
-
-int main(int argc, char **argv){
-    parse_args(argc, argv);
-    check_args();
-
-    get_payload();
-
+/**
+ * @brief Transmit all base64 data in PAYLOAD_B64 in DNS packets to the server.
+ * First packet will contain the destination file path, following packets will
+ * contain the encoded data and the last packet will be empty, signaling
+ * connection close.
+ *
+ * @return 0 if transmitted successfully, 1 if a packet confirmation was not
+ * received but connection was successfully closed, -1 if connection close
+ * confirmation was not received
+ */
+int transmit(){
 
     // Create a socket
     int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP); // UDP packet for DNS queries
     if(sock == -1){
-        printf("%d\n", sock);
         err("Failed to open socket");
+    }
+
+    // Set 1s receive timeout (for confirmation messages)
+    struct timeval timeout;
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 100000;
+    if(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+        err("Failed to set socket timeout option");
     }
 
     // Get destination address
     struct sockaddr_in dst;
     dst.sin_family = AF_INET;
     dst.sin_port = htons(53);
-    dst.sin_addr.s_addr = inet_addr(UPSTREAM_DNS_IP);
-
-    int dg_id = 0;
-    int chars_sent = 0;
-    while(dg_id != -1){
-
-        // Create a DNS header
-        unsigned char buffer[512] = {'\0'};
-        struct dns_header_t *header = (struct dns_header_t *)buffer;
-        header->xid = htons(9999); // Query ID (random)
-        header->flags = htons(256); // 00000001 00000000b = 256: Standard query, desire recursion
-        header->qdcount = htons(1); // Number of questions
-        // Leave ancount (answers), nscount (authority RRs) and arcount (additional
-        // RRs) as 0
-
-        // Get pointer to question in the buffer (right after the header)
-        unsigned char *question_tmp_ptr = &buffer[sizeof(struct dns_header_t)];
-
-
-        // Create a prefix containing datagram ID followed by '-' save its
-        // base64 equivalent
-        char prefix[32] = {'\0'};
-        sprintf(prefix, "%d", dg_id);
-        prefix[strlen(prefix)] = '-';
-        prefix[strlen(prefix)] = '\0';
-
-        int prefix_b64_len = 0;
-        char *prefix_b64 = base64_encode(prefix, strlen(prefix), &prefix_b64_len);
-        if(!prefix_b64){
-            err("Failed to convert to base64");
-        }
-
-        // Create datagram payload variable
-        // Max length is 126 because we can use two labels with max len of 63
-        // according to RFC1035
-        char dg_payload[127] = {'\0'};
-
-        // Copy prefix to dg_payload
-        strncpy(dg_payload, prefix_b64, prefix_b64_len);
-
-        if(dg_id == 0){
-            // If this is the first packet, also include the destination path
-        }
-
-
-        // Copy payload (maximum that will fit) to dg_payload
-        int chars_left = PAYLOAD_B64_len - chars_sent;
-        int chars_to_copy = 126 - prefix_b64_len;
-        if(chars_left < chars_to_copy){
-            chars_to_copy = chars_left;
-        }
-        if(chars_to_copy != 0){
-            strncpy(&dg_payload[prefix_b64_len], PAYLOAD_B64, chars_to_copy);
-            chars_sent += chars_to_copy;
-        }else{
-            // If there are no more data to send, send the final datagram only
-            // containing the prefix
-            dg_id = -1;
-        }
-
-
-        // TODO Fill the question with dg_payload
-
-        // Append first 63 bytes of the dg_payload
-        u_int8_t label1_len = strlen(dg_payload);
-        if(label1_len > 63){
-            label1_len = 63;
-        }
-        question_tmp_ptr[0] = (unsigned char)label1_len;
-        question_tmp_ptr += 1;
-        for(int i = 0; i < label1_len; i++){
-            question_tmp_ptr[i] = dg_payload[i];
-        }
-        question_tmp_ptr += label1_len;
-
-        // Append second 63 bytes if needed
-        u_int8_t label2_len = strlen(dg_payload) - label1_len;
-        if(label2_len > 0){
-            question_tmp_ptr[0] = (unsigned char)label2_len;
-            question_tmp_ptr += 1;
-            for(int i = label1_len, n = strlen(dg_payload); i < n; i++){
-                question_tmp_ptr[0] = dg_payload[i];
-                question_tmp_ptr += 1;
-            }
-        }
-
-        // Get the third label - the domain name and append it to the question
-        char name[126] = {'\0'};
-        for(int i = 0, n = strlen(BASE_HOST); i < n; i++){
-            if(BASE_HOST[i] == '.'){
-                break;
-            }
-            name[i] = BASE_HOST[i];
-        }
-        u_int8_t name_len = strlen(name);
-        question_tmp_ptr[0] = (unsigned char)name_len;
-        question_tmp_ptr += 1;
-        for(int i = 0; i < name_len; i++){
-            question_tmp_ptr[i] = name[i];
-        }
-        question_tmp_ptr += name_len;
-
-        // Get the final label - the domain extension and append it to the question
-        char extension[126] = {'\0'};
-        for(int i = 0, n = strlen(BASE_HOST) - strlen(name); i < n; i++){
-            extension[i] = BASE_HOST[i + strlen(name) + 1];
-        }
-        u_int8_t extension_len = strlen(extension);
-        question_tmp_ptr[0] = (unsigned char)extension_len;
-        question_tmp_ptr += 1;
-        for(int i = 0; i < extension_len; i++){
-            question_tmp_ptr[i] = extension[i];
-        }
-        question_tmp_ptr += extension_len;
-
-        // Finish the question name with 0x00
-        question_tmp_ptr[0] = (unsigned char)0;
-        question_tmp_ptr += 1;
-
-        // Set type and class of the DNS query
-        struct dns_question_info_t *question_info_ptr
-            = (struct dns_question_info_t *)question_tmp_ptr;
-        question_info_ptr->type = htons(1); // Type is A - host address
-        question_info_ptr->class = htons(1); // Class is internet address
-        question_tmp_ptr += 4;
-
-        // Send the datagram
-
-        // Packet length
-        /** int len = sizeof(struct dns_header_t) + (strlen((const char*)qname)+1) + sizeof(struct QUESTION) */
-        int len = question_tmp_ptr - buffer;
-
-        // Send the data
-        int ret = sendto(sock, (char*)buffer, len, 0, (struct sockaddr*)&dst, sizeof(dst));
-        if(ret < 0){
-            err("Failed to send DNS query");
-        }
-
-        if(dg_id != -1){
-            dg_id += 1;
-        }
-
+    // Use mallocd upstream DNS if it exists (user didn't specify '-u')
+    if(UPSTREAM_DNS_IP_MALLOCD){
+        dst.sin_addr.s_addr = inet_addr();
+    }else{
+        dst.sin_addr.s_addr = inet_addr(UPSTREAM_DNS_IP);
     }
 
+    // Send the destination path
+    printf("Sending dest path: %s\n", DST_FILEPATH);
+    int dst_path_b64_len = 0;
+    char *dst_path_b64 = base64_encode(DST_FILEPATH, strlen(DST_FILEPATH), &dst_path_b64_len);
+    char dst_path_packet[512] = {'\0'};
+    int dst_path_packet_len = 0;
+    create_packet(dst_path_packet, &dst_path_packet_len, dst_path_b64, dst_path_b64_len);
+    send_packet(sock, dst, dst_path_packet, dst_path_packet_len);
+    int ret = handle_confirmation(sock, dst);
+    if(ret){
+        return ret;
+    }
+    free(dst_path_b64);
 
-    // max 250B domain name
-    // max 64B label I guess
-    // TODO MAX 4 labels + suffix
+    // Send all data:
+    int bytes_sent = 0;
+    while(bytes_sent < PAYLOAD_B64_LEN){
+        printf("Sending bytes after %d\n", bytes_sent);
 
-    /** fclose(SRC_FILE); */
+        // Take up to 126 bytes from PAYLOAD_B64 per packet
+        char packet_payload[127] = {'\0'};
+        int packet_payload_len = PAYLOAD_B64_LEN - bytes_sent;
+        if(packet_payload_len > 126){
+            packet_payload_len = 126;
+        }
+        strncpy(packet_payload, PAYLOAD_B64 + bytes_sent, packet_payload_len);
 
-    return 0;
+        // Create and send the packet
+        char packet[512] = {'\0'};
+        int packet_len = 0;
+        create_packet(packet, &packet_len, packet_payload, packet_payload_len);
+        send_packet(sock, dst, packet, packet_len);
+        int ret = handle_confirmation(sock, dst);
+        if(ret){
+            return ret;
+        }
+
+        bytes_sent += packet_payload_len;
+    }
+
+    printf("Sending empty\n");
+    // Send empty packet to finalize the transfer
+    return ensure_send_empty(sock, dst);
+}
+
+
+/*
+ *
+ * MAIN
+ *
+ */
+
+
+int main(int argc, char **argv){
+
+    // Parse and check arguments and save the payload to send (encode it first)
+    parse_args(argc, argv);
+    check_args();
+    get_payload();
+
+    int ret_val = 0;
+
+    for(int i = 0; i < MAX_TRIES; i++){
+        // Try to transmit the data. If it fails, try again for total of
+        // MAX_TRIES. If that fails, return 2
+        int ret = transmit();
+        if(ret == 0){
+            break;
+        }else if(ret == -1){
+            fprintf(stderr, "Try %d of %d for transmitting the data failed and connection could not be closed. Not trying again.\n", i + 1, MAX_TRIES);
+            ret_val = 2;
+            break;
+        }
+        
+        fprintf(stderr, "Try %d of %d for transmitting the data failed.\n", i + 1, MAX_TRIES);
+    }
+
+    // Free resources
+    if(SRC_FILE){
+        fclose(SRC_FILE);
+    }
+    free(UPSTREAM_DNS_IP_MALLOCD);
+    free(PAYLOAD);
+    free(PAYLOAD_B64);
+
+    return ret_val;
 }
