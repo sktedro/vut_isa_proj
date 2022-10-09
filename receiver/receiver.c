@@ -439,9 +439,9 @@ int main(int argc, char **argv){
             first_packet_received = 0;
         }
 
-        // TODO Send confirmation response - the same packet as received should
-        // suffice I guess
-        // At least set first bit of flags to 1 (flagging a response)
+        // Send confirmation response - the same packet as received but
+        // with "reponse" flag set (first bit of 16bit flags = 32768 decimal)
+        ((struct dns_header_t *)buffer)->flags += (u_int16_t)htons(32768); 
         int sent_len = sendto(sock, &buffer, buffer_len, MSG_CONFIRM, (struct sockaddr *)&client, client_len);
     }
 
