@@ -321,10 +321,6 @@ void get_payload(){
         payload_len += read;
     }
 
-    for(int i = 0; i < payload_len; i++)
-        printf("%u.", payload[i]);
-    printf("\n");
-
     // Close the file
     fclose(SRC_FILE);
     SRC_FILE = NULL;
@@ -335,13 +331,6 @@ void get_payload(){
     if(!PAYLOAD_B64){
         err("Failed to convert input to base64");
     }
-    /**
-      * printf("Base64: ");
-      * for(int i = 0; i < PAYLOAD_B64_LEN; i++){
-      *     printf("%c", PAYLOAD_B64[i]);
-      * }
-      * printf("\n");
-      */
 
     free(payload);
     payload = NULL;
@@ -561,7 +550,6 @@ int transmit(){
     }
 
     // Send the destination path
-    /** printf("Sending dest path: %s\n", DST_FILEPATH); */
     int dst_path_b64_len = 0;
     char *dst_path_b64 = base64_encode(DST_FILEPATH, strlen(DST_FILEPATH), &dst_path_b64_len);
     char dst_path_packet[512] = {'\0'};
@@ -577,7 +565,6 @@ int transmit(){
     // Send all data:
     int bytes_sent = 0;
     while(bytes_sent < PAYLOAD_B64_LEN){
-        /** printf("Sending bytes after %d\n", bytes_sent); */
 
         // Take up to 126 bytes from PAYLOAD_B64 per packet
         char packet_payload[127] = {'\0'};
@@ -600,7 +587,6 @@ int transmit(){
         bytes_sent += packet_payload_len;
     }
 
-    /** printf("Sending empty\n"); */
     // Send empty packet to finalize the transfer
     return ensure_send_empty(sock, dst);
 }

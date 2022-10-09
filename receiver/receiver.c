@@ -330,7 +330,6 @@ void handle_next_payload(char *payload_b64){
     // Copy payload to DATA_B64
     strcpy(DATA_B64 + DATA_B64_LEN, payload_b64);
     DATA_B64_LEN += strlen(payload_b64);
-    printf("<<%u>>\n", DATA_B64[DATA_B64_LEN - 1]);
 }
 
 
@@ -339,30 +338,15 @@ void handle_next_payload(char *payload_b64){
  * data, save it to a provided file and free all resources
  */
 void handle_fin_msg(){
-    printf("<%u>\n", DATA_B64[DATA_B64_LEN - 1]);
     // Add padding back to the b64
     while(DATA_B64_LEN % 4 != 0){
         DATA_B64[DATA_B64_LEN] = '=';
         DATA_B64_LEN += 1;
     }
-    printf("<%u>\n", DATA_B64[DATA_B64_LEN - 1]);
 
     // Decode b64 data and write it to a file
     int data_len = 0;
     char *data = base64_decode(DATA_B64, DATA_B64_LEN, &data_len);
-
-    printf("!%u!\n", data[data_len - 1]);
-    for(int i = 0; i < data_len; i++)
-        printf("%u.", data[i]);
-    printf("\n");
-
-
-    /**
-      * printf("data:");
-      * for(int i = 0; i < data_len; i++)
-      *     printf("%c", data[i]);
-      * printf("\n");
-      */
 
     // Save to file
     FILE *f = fopen(DST_PATH, "wb");
@@ -437,8 +421,6 @@ int main(int argc, char **argv){
         // Get payload in b64 from the packet
         unsigned char payload_b64[256] = {'\0'};
         get_payload(payload_b64, buffer, buffer_len);
-
-        printf("b64: %s\n", payload_b64);
 
         if(!first_packet_received){
             // We received a destination file path - decode and save it
