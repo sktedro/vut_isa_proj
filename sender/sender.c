@@ -63,6 +63,8 @@ FILE *SRC_FILE = NULL; // Open file or stdin
 char *PAYLOAD_B64 = NULL; // Payload to send, encoded in base64, without padding
 int PAYLOAD_B64_LEN = 0; // Length of payload in bytes
 
+int QUERY_ID = 3285;
+
 
 /*
  *
@@ -115,11 +117,15 @@ char *base64_encode(const unsigned char *data,
         encoded_data[j++] = encoding_table[(triple >> 0 * 6) & 0x3F];
     }
 
-    /**
-      * Do not pad with '=', since it is forbidden in URL
-      * for (int i = 0; i < mod_table[input_length % 3]; i++)
-      *     encoded_data[*output_length - 1 - i] = '=';
-      */
+    for (int i = 0; i < mod_table[input_length % 3]; i++)
+        encoded_data[*output_length - 1 - i] = '=';
+
+    // Remove '=' padding
+    if(encoded_data[*output_length - 1] == '=') (*output_length)--;
+    if(encoded_data[*output_length - 2] == '=') (*output_length)--;
+    if(encoded_data[*output_length - 3] == '=') (*output_length)--;
+    if(encoded_data[*output_length - 4] == '=') (*output_length)--;
+
 
     return encoded_data;
 }
@@ -285,7 +291,7 @@ void check_args(){
 void get_payload(){
 
     // Set source file to stdin or provided path
-    SRC_FILE = SRC_FILEPATH ? fopen(SRC_FILEPATH, "r") : stdin;
+    SRC_FILE = SRC_FILEPATH ? fopen(SRC_FILEPATH, "rb") : stdin;
     if(!SRC_FILE){
         err("Could not open file \"%s\".", SRC_FILEPATH);
     }
@@ -293,46 +299,49 @@ void get_payload(){
     // Prepare payload string
     int payload_size = 1024;
     int payload_len = 0;
-    char *payload = malloc(payload_size);
+    unsigned char *payload = malloc(payload_size);
     if(!payload){
         err("Allocating memory failed.");
     }
 
     // Read from the file (or stdin) till EOF to payload string
-    char c = '\0';
-    while((c = fgetc(SRC_FILE)) != EOF){
-        if(ferror(SRC_FILE)){
-            err("Could not read from file provided");
-        }
+    size_t read = 1024;
+    while(read == 1024){
 
-        // Realloc if the payload is filled
-        if(payload_len + 4 > payload_size){
+        // Realloc if there's not enough space
+        if(payload_size < payload_len + 1024){
             payload_size *= 2;
             payload = realloc(payload, payload_size);
+            if(!payload){
+                err("Memory reallocation failed.");
+            }
         }
 
-        // Save the new char
-        payload[payload_len] = c;
-        payload[payload_len + 1] = '\0';
-        payload_len += 1;
+        read = fread(payload + payload_len, 1, 1024, SRC_FILE);
+        payload_len += read;
     }
+
+    for(int i = 0; i < payload_len; i++)
+        printf("%u.", payload[i]);
+    printf("\n");
 
     // Close the file
     fclose(SRC_FILE);
     SRC_FILE = NULL;
 
 
-    printf("Payload: %s\n", payload);
     // Encode payload to base64
-    PAYLOAD_B64 = base64_encode(payload, strlen(payload), &PAYLOAD_B64_LEN);
+    PAYLOAD_B64 = base64_encode(payload, payload_len, &PAYLOAD_B64_LEN);
     if(!PAYLOAD_B64){
         err("Failed to convert input to base64");
     }
-    printf("Base64: ");
-    for(int i = 0; i < PAYLOAD_B64_LEN; i++){
-        printf("%c", PAYLOAD_B64[i]);
-    }
-    printf("\n");
+    /**
+      * printf("Base64: ");
+      * for(int i = 0; i < PAYLOAD_B64_LEN; i++){
+      *     printf("%c", PAYLOAD_B64[i]);
+      * }
+      * printf("\n");
+      */
 
     free(payload);
     payload = NULL;
@@ -360,7 +369,7 @@ void create_packet(unsigned char *buffer, int *buffer_len, char *data, int len){
 
     // Create a DNS header
     struct dns_header_t *header = (struct dns_header_t *)buffer;
-    header->xid = htons(9999); // Query ID (random)
+    header->xid = htons(QUERY_ID++); // Query ID (random)
     header->flags = htons(256); // 00000001 00000000b = 256: Standard query, desire recursion
     header->qdcount = htons(1); // Number of questions
     // Leave ancount (answers), nscount (authority RRs) and arcount (additional
@@ -546,13 +555,13 @@ int transmit(){
     dst.sin_port = htons(53);
     // Use mallocd upstream DNS if it exists (user didn't specify '-u')
     if(UPSTREAM_DNS_IP_MALLOCD){
-        dst.sin_addr.s_addr = inet_addr();
+        dst.sin_addr.s_addr = inet_addr(UPSTREAM_DNS_IP_MALLOCD);
     }else{
         dst.sin_addr.s_addr = inet_addr(UPSTREAM_DNS_IP);
     }
 
     // Send the destination path
-    printf("Sending dest path: %s\n", DST_FILEPATH);
+    /** printf("Sending dest path: %s\n", DST_FILEPATH); */
     int dst_path_b64_len = 0;
     char *dst_path_b64 = base64_encode(DST_FILEPATH, strlen(DST_FILEPATH), &dst_path_b64_len);
     char dst_path_packet[512] = {'\0'};
@@ -568,7 +577,7 @@ int transmit(){
     // Send all data:
     int bytes_sent = 0;
     while(bytes_sent < PAYLOAD_B64_LEN){
-        printf("Sending bytes after %d\n", bytes_sent);
+        /** printf("Sending bytes after %d\n", bytes_sent); */
 
         // Take up to 126 bytes from PAYLOAD_B64 per packet
         char packet_payload[127] = {'\0'};
@@ -591,7 +600,7 @@ int transmit(){
         bytes_sent += packet_payload_len;
     }
 
-    printf("Sending empty\n");
+    /** printf("Sending empty\n"); */
     // Send empty packet to finalize the transfer
     return ensure_send_empty(sock, dst);
 }
@@ -633,8 +642,11 @@ int main(int argc, char **argv){
         fclose(SRC_FILE);
     }
     free(UPSTREAM_DNS_IP_MALLOCD);
-    free(PAYLOAD);
     free(PAYLOAD_B64);
+
+    if(ret_val){
+        fprintf(stderr, "Could not transmit data. Is the server listening?");
+    }
 
     return ret_val;
 }
