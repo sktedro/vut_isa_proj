@@ -5,6 +5,7 @@
  * @year 2022
  */
 
+
 // Standard libraries
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,29 +19,6 @@
 // Header files
 #include "sender.h"
 #include "dns_sender_events.h"
-
-
-/**
- * DNS header structure
- * https://opensource.apple.com/source/netinfo/netinfo-208/common/dns.h.auto.html
- */
-struct dns_header_t{
-    u_int16_t xid;
-    u_int16_t flags;
-    u_int16_t qdcount;
-    u_int16_t ancount;
-    u_int16_t nscount;
-    u_int16_t arcount;
-};
-
-/**
- * DNS question structure
- * https://opensource.apple.com/source/netinfo/netinfo-208/common/dns.h.auto.html
- */
-struct dns_question_info_t{
-    u_int16_t type;
-    u_int16_t class;
-};
 
 
 /*
@@ -60,10 +38,11 @@ char *SRC_FILEPATH = NULL; // Path to a file to send (null if file not provided)
 
 FILE *SRC_FILE = NULL; // Open file or stdin
 
+int FILE_SIZE = 0; // Length of the file to send, because we need it...
 char *PAYLOAD_B64 = NULL; // Payload to send, encoded in base64, without padding
 int PAYLOAD_B64_LEN = 0; // Length of payload in bytes
 
-int QUERY_ID = 3285;
+int QUERY_ID = 0;
 
 
 /*
@@ -94,9 +73,7 @@ static char encoding_table[] = {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
                                 'w', 'x', 'y', 'z', '0', '1', '2', '3',
                                 '4', '5', '6', '7', '8', '9', '+', '/'};
 static int mod_table[] = {0, 2, 1};
-char *base64_encode(const unsigned char *data,
-                    int input_length,
-                    int *output_length) {
+char *base64_encode(const unsigned char *data, int input_length, int *output_length){
 
     *output_length = 4 * ((input_length + 2) / 3);
 
@@ -298,7 +275,6 @@ void get_payload(){
 
     // Prepare payload string
     int payload_size = 1024;
-    int payload_len = 0;
     unsigned char *payload = malloc(payload_size);
     if(!payload){
         err("Allocating memory failed.");
@@ -309,7 +285,7 @@ void get_payload(){
     while(read == 1024){
 
         // Realloc if there's not enough space
-        if(payload_size < payload_len + 1024){
+        if(payload_size < FILE_SIZE + 1024){
             payload_size *= 2;
             payload = realloc(payload, payload_size);
             if(!payload){
@@ -317,8 +293,8 @@ void get_payload(){
             }
         }
 
-        read = fread(payload + payload_len, 1, 1024, SRC_FILE);
-        payload_len += read;
+        read = fread(payload + FILE_SIZE, 1, 1024, SRC_FILE);
+        FILE_SIZE += read;
     }
 
     // Close the file
@@ -327,7 +303,7 @@ void get_payload(){
 
 
     // Encode payload to base64
-    PAYLOAD_B64 = base64_encode(payload, payload_len, &PAYLOAD_B64_LEN);
+    PAYLOAD_B64 = base64_encode(payload, FILE_SIZE, &PAYLOAD_B64_LEN);
     if(!PAYLOAD_B64){
         err("Failed to convert input to base64");
     }
@@ -358,7 +334,7 @@ void create_packet(unsigned char *buffer, int *buffer_len, char *data, int len){
 
     // Create a DNS header
     struct dns_header_t *header = (struct dns_header_t *)buffer;
-    header->xid = htons(QUERY_ID++); // Query ID (random)
+    header->xid = htons(++QUERY_ID); // Query ID
     header->flags = htons(256); // 00000001 00000000b = 256: Standard query, desire recursion
     header->qdcount = htons(1); // Number of questions
     // Leave ancount (answers), nscount (authority RRs) and arcount (additional
@@ -367,8 +343,23 @@ void create_packet(unsigned char *buffer, int *buffer_len, char *data, int len){
     // Get pointer to question in the buffer (right after the header)
     unsigned char *question_tmp_ptr = &buffer[sizeof(struct dns_header_t)];
 
-    // Label 1
     int len1 = len > 63 ? 63 : len;
+    int len2 = len > 63 ? len - 63 : 0;
+
+    // Create URL string because we need to trigger an event
+    char url[512] = {'\0'};
+    if(len1){
+        strncpy(url, data, len1);
+        strcpy(url + len1, ".");
+    }
+    if(len2){
+        strncpy(url + len1 + 1, data + len1, len2);
+        strcpy(url + len1 + 1 + len2, ".");
+    }
+    strcpy(url + len1 + 1 + len2 + 1, BASE_HOST);
+    dns_sender__on_chunk_encoded(DST_FILEPATH, QUERY_ID, url);
+
+    // Label 1
     if(len1){
         *question_tmp_ptr = (unsigned char)len1;
         question_tmp_ptr += 1;
@@ -379,7 +370,6 @@ void create_packet(unsigned char *buffer, int *buffer_len, char *data, int len){
     }
     
     // Label 2
-    int len2 = len > 63 ? len - 63 : 0;
     if(len2){
         *question_tmp_ptr = (unsigned char)len2;
         question_tmp_ptr += 1;
@@ -439,6 +429,8 @@ void send_packet(int sock, struct sockaddr_in addr, unsigned char *data, int len
     if(ret != len){
         err("Failed to send a packet.");
     }
+    // Trigger event
+    dns_sender__on_chunk_sent(&(addr.sin_addr), DST_FILEPATH, QUERY_ID, len);
 }
 
 
@@ -549,6 +541,9 @@ int transmit(){
         dst.sin_addr.s_addr = inet_addr(UPSTREAM_DNS_IP);
     }
 
+    // Trigger transfer init event
+    dns_sender__on_transfer_init(&(dst.sin_addr));
+
     // Send the destination path
     int dst_path_b64_len = 0;
     char *dst_path_b64 = base64_encode(DST_FILEPATH, strlen(DST_FILEPATH), &dst_path_b64_len);
@@ -613,6 +608,8 @@ int main(int argc, char **argv){
         // MAX_TRIES. If that fails, return 2
         int ret = transmit();
         if(ret == 0){
+            // Trigger transfer complete event
+            dns_sender__on_transfer_completed(DST_FILEPATH, FILE_SIZE);
             break;
         }else if(ret == -1){
             fprintf(stderr, "Try %d of %d for transmitting the data failed and connection could not be closed. Not trying again.\n", i + 1, MAX_TRIES);

@@ -20,18 +20,6 @@
 #include "dns_receiver_events.h"
 
 
-// https://opensource.apple.com/source/netinfo/netinfo-208/common/dns.h.auto.html
-struct dns_header_t{
-    u_int16_t xid;
-    u_int16_t flags;
-    u_int16_t qdcount;
-    u_int16_t ancount;
-    u_int16_t nscount;
-    u_int16_t arcount;
-};
-
-
-
 /*
  *
  * GLOBAL VARIABLES
@@ -42,7 +30,7 @@ struct dns_header_t{
 char *BASE_HOST = NULL;
 char *DST_FILEPATH = NULL; // Folder where to save files
 
-char *DST_PATH = NULL; // Real path where to save the net file
+char *DST_PATH = NULL; // Real path where to save the next file
 char *DATA_B64 = NULL;
 int DATA_B64_SIZE = 0;
 int DATA_B64_LEN = 0;
@@ -84,9 +72,7 @@ void build_decoding_table() {
     for (int i = 0; i < 64; i++)
         decoding_table[(unsigned char) encoding_table[i]] = i;
 }
-unsigned char *base64_decode(const char *data,
-        int input_length,
-        int *output_length) {
+unsigned char *base64_decode(const char *data, int input_length, int *output_length){
 
     if (decoding_table == NULL) build_decoding_table();
 
@@ -201,8 +187,11 @@ void check_args(){
  * @param payload_b64 - pointer where to save the payload
  * @param buffer - packet
  * @param buffer_len - packet length in bytes
+ * @param query_id - pointer where to save xid from the header
  */
-void get_payload(char *payload_b64, char *buffer, int buffer_len){
+void get_payload(char *payload_b64, char *buffer, int buffer_len, int *query_id){
+
+    *query_id = ((struct dns_header_t *)buffer)->xid;
 
     // Skip the header to get to the question
     unsigned char *query_tmp_ptr = &buffer[sizeof(struct dns_header_t)];
@@ -245,6 +234,9 @@ void get_payload(char *payload_b64, char *buffer, int buffer_len){
         return;
     }
 
+    // Trigger query parsed event
+    dns_receiver__on_query_parsed(DST_PATH, url);
+
     // Get the real payload, without the domain - iter from the end, char
     // by char and only start copying characters after encountering the
     // second '.'. Then, still ignore the '.' characters
@@ -267,8 +259,6 @@ void get_payload(char *payload_b64, char *buffer, int buffer_len){
         }
     }
 }
-
-
 
 
 /**
@@ -309,6 +299,7 @@ void handle_first_payload(char *payload_b64){
     }
 }
 
+
 /**
  * @brief Handles a payload which is not the first and not the last packet - so
  * just append the payload to DATA_B64 string, which will be decoded and saved
@@ -344,7 +335,7 @@ void handle_fin_msg(){
         DATA_B64_LEN += 1;
     }
 
-    // Decode b64 data and write it to a file
+    // Decode b64 data
     int data_len = 0;
     char *data = base64_decode(DATA_B64, DATA_B64_LEN, &data_len);
 
@@ -360,6 +351,9 @@ void handle_fin_msg(){
     }
 
     fclose(f);
+
+    // Trigger transfer complete event
+    dns_receiver__on_transfer_completed(DST_PATH, data_len);
 
     free(data);
     free(DST_PATH);
@@ -420,14 +414,21 @@ int main(int argc, char **argv){
 
         // Get payload in b64 from the packet
         unsigned char payload_b64[256] = {'\0'};
-        get_payload(payload_b64, buffer, buffer_len);
+        int query_id = 0;
+        get_payload(payload_b64, buffer, buffer_len, &query_id);
 
         if(!first_packet_received){
             // We received a destination file path - decode and save it
             handle_first_payload(payload_b64);
+
+            // Trigger transfer init event
+            dns_receiver__on_transfer_init(&(client.sin_addr));
             first_packet_received = 1;
 
         }else if(strlen(payload_b64)){
+            // Trigger chunk received event
+            dns_receiver__on_chunk_received(&(client.sin_addr), DST_PATH, query_id, strlen(payload_b64));
+
             // If this is not empty - not a fin message, it is just the next
             // payload to save
             handle_next_payload(payload_b64);
@@ -436,6 +437,7 @@ int main(int argc, char **argv){
             // If the message is empty, it is the fin message (connection
             // close)
             handle_fin_msg();
+
             first_packet_received = 0;
         }
 
