@@ -220,10 +220,12 @@ void check_args(){
     if(!BASE_HOST || !DST_FILEPATH){
         // If base host or dst filepath were not provided -> error
         err("Base host or Destination filepath argument missing.");
-        exit(1);
     }
 
     // TODO check if DST_FILEPATH is under 126 / 4 * 3 characters long
+    if(strlen(DST_FILEPATH) > 94){
+        err("Sorry, destination filepath must be shorter or equal to 94 characters");
+    }
 
     if(!UPSTREAM_DNS_IP){
         // If no upstream DNS IP was provided in args, generate it or something
@@ -236,7 +238,6 @@ void check_args(){
         int result = inet_pton(AF_INET, UPSTREAM_DNS_IP, &(sa.sin_addr));
         if(result == 0){
             err("Upstream DNS IP is invalid: \"%s\".", UPSTREAM_DNS_IP);
-            exit(1);
         }
     }
 
@@ -258,7 +259,6 @@ void check_args(){
         for(int j = 0; j < forbidden_chars_len; j++){
             if(DST_FILEPATH[i] == forbidden_chars[j]){
                 err("Destination path contains forbidden characters: \'%c\'.", forbidden_chars[j]);
-                exit(1);
             }
         }
     }

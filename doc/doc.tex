@@ -155,9 +155,12 @@
   na konci komunikácie.
 
   Posledná správa, značiaca koniec komunikácie, neobsahuje žiadne zo
-  zakódovaných dát. Doména v DNS otázke sa teda rovná argumentu
-  \textit{BASE\_HOST}. Tento spôsob nie je efektívny a zvolili sme si ho iba
-  kvôli jednoduchosti implementácie.
+  zakódovaných dát. Doména v DNS otázke poslednej požiadavky je
+  \textit{a.a.BASE\_HOST}, kde \textit{BASE\_HOST} je parameter spustenia.
+  Takáto otázka je ľahko rozoznateľná otázok s dátami, keďže má dva doménové
+  štítky (nepočítajúc \textit{BASE\_HOST}) a prvý z nich nie je plný, čo by sa
+  u otázky so zakódovanými dátami nestalo.  Tento spôsob nie je efektívny a
+  zvolili sme si ho iba kvôli jednoduchosti implementácie.
 
   Ako sme už naznačili, UDP nie je spoľahlivý komunikačný protokol. Z toho
   dôvodu server na každú prijatú správu klientovi odpovedá za účelom potvrdenia
