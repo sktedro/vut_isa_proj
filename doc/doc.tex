@@ -230,14 +230,17 @@
   \section{Testovanie}
 
   Testovanie programov klienta a serveru prebiehali manuálne aj automaticky,
-  na našom zariadení s operačným systémom \textit{Debian 11} aj na školskom
-  serveri s operačným systémom \textit{FreeBSD 13}.
+  % na našom zariadení s operačným systémom \textit{Debian 11} aj na školskom
+  % serveri s operačným systémom \textit{FreeBSD 13}.
+  na našom zariadení s operačným systémom \textit{Debian 11}, pričom DNS
+  datagramy boli posielané iba cez \textit{localhost}.
 
 
   \subsection{Manuálne testovanie}
 
   Programy klienta aj serveru boli manuálne otestované s rôznymi argumentmi a 
-  vstupmi s rôznou dĺžkou aj typom (binárne aj textové dáta).
+  vstupmi s rôznou dĺžkou aj typom (binárne aj textové dáta). Na kontrolu
+  paketov cestujúcich po sieti sme použili program \textit{Wireshark}.
 
 
   \subsection{Testovací skript}
@@ -245,9 +248,26 @@
   Na to, aby sme otestovali prenos čo najviac rôznych kombinácií dát, sme
   vytvorili jednoduchý skript v jazyku \textit{python}. Skript generoval
   náhodné ASCII znaky náhodnej dĺžky, zapísal ich do súboru a spustil program
-  klienta. Po konci behu programu skontroluje, či je vstupný súbor identický
-  so súborom vytvoreným serverom.
+  klienta pre odoslanie tohto súboru. Po konci behu programu skript
+  skontroluje, či je vstupný súbor identický so súborom vytvoreným serverom.
 
+
+
+  \begin{thebibliography}{1}
+
+    \bibitem{rfc} P. Mockapetris (1987): Domain Names - Implementation and
+      Specification (RFC 1035). On-line: \\
+      \href{https://www.ietf.org/rfc/rfc1035.txt}{https://www.ietf.org/rfc/rfc1035.txt}
+
+    \bibitem{dns_query} \textit{Silver Moon} (2020): DNS Query Code in C with Linux
+      sockets. On-line: \\
+      \href{https://www.binarytides.com/dns-query-code-in-c-with-linux-sockets/}{https://www.binarytides.com/dns-query-code-in-c-with-linux-sockets/}
+
+    \bibitem{udp_server_client} \textit{amitds} (2022): UDP Server-Client
+      implementation in C. On-line: \\
+      \href{https://www.geeksforgeeks.org/udp-server-client-implementation-c/}{https://www.geeksforgeeks.org/udp-server-client-implementation-c/}
+
+  \end{thebibliography}
 
 
 \end{document}
