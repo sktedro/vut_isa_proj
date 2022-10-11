@@ -3,4 +3,7 @@
 notes.md
 sender/sender
 receiver/receiver
-
+**.log
+**.toc
+**.out
+**.aux

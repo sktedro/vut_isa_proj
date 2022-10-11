@@ -15,6 +15,8 @@
 
 // Networking libraries
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 // Header files
 #include "sender.h"
@@ -99,9 +101,9 @@ char *base64_encode(const unsigned char *data, int input_length, int *output_len
 
     // Remove '=' padding
     if(encoded_data[*output_length - 1] == '=') (*output_length)--;
-    if(encoded_data[*output_length - 2] == '=') (*output_length)--;
-    if(encoded_data[*output_length - 3] == '=') (*output_length)--;
-    if(encoded_data[*output_length - 4] == '=') (*output_length)--;
+    if(encoded_data[*output_length - 1] == '=') (*output_length)--;
+    if(encoded_data[*output_length - 1] == '=') (*output_length)--;
+    if(encoded_data[*output_length - 1] == '=') (*output_length)--;
 
 
     return encoded_data;
@@ -221,6 +223,8 @@ void check_args(){
         exit(1);
     }
 
+    // TODO check if DST_FILEPATH is under 126 / 4 * 3 characters long
+
     if(!UPSTREAM_DNS_IP){
         // If no upstream DNS IP was provided in args, generate it or something
         get_upstream_dns_ip();
@@ -301,7 +305,6 @@ void get_payload(){
     fclose(SRC_FILE);
     SRC_FILE = NULL;
 
-
     // Encode payload to base64
     PAYLOAD_B64 = base64_encode(payload, FILE_SIZE, &PAYLOAD_B64_LEN);
     if(!PAYLOAD_B64){
@@ -327,7 +330,8 @@ void get_payload(){
  * @param buffer - allocated output string
  * @param buffer_len - pointer to an integer - will contain packet length in
  * bytes
- * @param data - data to encapsulate in the packet
+ * @param data - data to encapsulate in the packet. If null, datagram with
+ * question a.a.BASE_HOST will be created
  * @param len - length of the data in bytes
  */
 void create_packet(unsigned char *buffer, int *buffer_len, char *data, int len){
@@ -343,40 +347,68 @@ void create_packet(unsigned char *buffer, int *buffer_len, char *data, int len){
     // Get pointer to question in the buffer (right after the header)
     unsigned char *question_tmp_ptr = &buffer[sizeof(struct dns_header_t)];
 
-    int len1 = len > 63 ? 63 : len;
-    int len2 = len > 63 ? len - 63 : 0;
+    if(data){
 
-    // Create URL string because we need to trigger an event
-    char url[512] = {'\0'};
-    if(len1){
-        strncpy(url, data, len1);
-        strcpy(url + len1, ".");
-    }
-    if(len2){
-        strncpy(url + len1 + 1, data + len1, len2);
-        strcpy(url + len1 + 1 + len2, ".");
-    }
-    strcpy(url + len1 + 1 + len2 + 1, BASE_HOST);
-    dns_sender__on_chunk_encoded(DST_FILEPATH, QUERY_ID, url);
+        printf("Encapsulating ", data);
+        for(int i = 0; i < len; i++){
+            printf("%c", data[i]);
+        }
+        printf("\n");
 
-    // Label 1
-    if(len1){
-        *question_tmp_ptr = (unsigned char)len1;
-        question_tmp_ptr += 1;
-        for(int i = 0; i < len1; i++){
-            question_tmp_ptr[i] = data[i];
+        // If data is not NULL, put it to two labels
+
+        int len1 = len > 63 ? 63 : len;
+        int len2 = len > 63 ? len - 63 : 0;
+
+        // Create URL string because we need to trigger an event
+        char url[512] = {'\0'};
+        if(len1){
+            strncpy(url, data, len1);
+            strcpy(url + len1, ".");
         }
-        question_tmp_ptr += len1;
-    }
-    
-    // Label 2
-    if(len2){
-        *question_tmp_ptr = (unsigned char)len2;
-        question_tmp_ptr += 1;
-        for(int i = 63; i < 63 + len2; i++){
-            question_tmp_ptr[i - 63] = data[i];
+        if(len2){
+            strncpy(url + len1 + 1, data + len1, len2);
+            strcpy(url + len1 + 1 + len2, ".");
         }
-        question_tmp_ptr += len2;
+        strcpy(url + len1 + 1 + len2 + 1, BASE_HOST);
+        dns_sender__on_chunk_encoded(DST_FILEPATH, QUERY_ID, url);
+
+        // Label 1
+        if(len1){
+            *question_tmp_ptr = (unsigned char)len1;
+            question_tmp_ptr += 1;
+            for(int i = 0; i < len1; i++){
+                question_tmp_ptr[i] = data[i];
+            }
+            question_tmp_ptr += len1;
+        }
+        
+        // Label 2
+        if(len2){
+            *question_tmp_ptr = (unsigned char)len2;
+            question_tmp_ptr += 1;
+            for(int i = 63; i < 63 + len2; i++){
+                question_tmp_ptr[i - 63] = data[i];
+            }
+            question_tmp_ptr += len2;
+        }
+
+    }else{
+        // Otherwise, put a.a.BASE_HOST to the question as an empty message
+        // which will signal end of communication
+
+        printf("Sending fin msg\n");
+        // Label 1
+        *question_tmp_ptr = (unsigned char)1;
+        question_tmp_ptr += 1;
+        *question_tmp_ptr = 'a';
+        question_tmp_ptr += 1;
+
+        // Label 2
+        *question_tmp_ptr = (unsigned char)1;
+        question_tmp_ptr += 1;
+        *question_tmp_ptr = 'a';
+        question_tmp_ptr += 1;
     }
 
     int BASE_HOST_i = 0;
@@ -465,7 +497,7 @@ int ensure_send_empty(int sock, struct sockaddr_in addr){
     for(int i = 0; i < MAX_TRIES; i++){
         char packet[512] = {'\0'};
         int packet_len = 0;
-        create_packet(packet, &packet_len, "", 0);
+        create_packet(packet, &packet_len, NULL, 0);
         send_packet(sock, addr, packet, packet_len);
         if(!wait_for_confirmation(sock, addr)){
             return 0;

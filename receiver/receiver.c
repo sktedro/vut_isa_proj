@@ -5,6 +5,7 @@
  * @year 2022
  */
 
+
 // Standard libraries
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,7 +14,10 @@
 #include <sys/stat.h>
 
 // Networking libraries
+#include <sys/socket.h>
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 // Header files
 #include "receiver.h"
@@ -191,6 +195,11 @@ void check_args(){
  */
 void get_payload(char *payload_b64, char *buffer, int buffer_len, int *query_id){
 
+    // Create a.a.BASE_HOST url to compare with payload. If the question is
+    // equal to this, it is a fin datagram
+    char fin_question_url[512] = "a.a.";
+    strcat(fin_question_url, BASE_HOST);
+
     *query_id = ((struct dns_header_t *)buffer)->xid;
 
     // Skip the header to get to the question
@@ -201,7 +210,7 @@ void get_payload(char *payload_b64, char *buffer, int buffer_len, int *query_id)
     while(1){
 
         // Get label length: first byte
-        u_int8_t label_len = (u_int8_t)(*query_tmp_ptr);
+        uint8_t label_len = (uint8_t)(*query_tmp_ptr);
         query_tmp_ptr += 1;
 
         // If label length is zero, this is end of labels
@@ -236,6 +245,12 @@ void get_payload(char *payload_b64, char *buffer, int buffer_len, int *query_id)
 
     // Trigger query parsed event
     dns_receiver__on_query_parsed(DST_PATH, url);
+
+    // If the url equals url of a fin question, return with payload being empty
+    if(!strcmp(url, fin_question_url)){
+        payload_b64[0] = '\0';
+        return;
+    }
 
     // Get the real payload, without the domain - iter from the end, char
     // by char and only start copying characters after encountering the
@@ -282,9 +297,10 @@ void handle_first_payload(char *payload_b64){
     if(!DST_PATH){
         err("Could not allocate memory");
     }
+    memset(DST_PATH, '\0', 512);
     strcpy(DST_PATH, DST_FILEPATH);
-    DST_PATH[strlen(DST_PATH)] = '/';
-    strncpy(DST_PATH + strlen(DST_PATH), payload, payload_len);
+    strcat(DST_PATH, "/");
+    strncat(DST_PATH, payload, payload_len);
 
     free(payload);
 
@@ -341,6 +357,7 @@ void handle_fin_msg(){
 
     // Save to file
     FILE *f = fopen(DST_PATH, "wb");
+    printf("%s\n", DST_PATH);
     if(!f){
         err("Could not open destination file");
     }
@@ -418,6 +435,8 @@ int main(int argc, char **argv){
         get_payload(payload_b64, buffer, buffer_len, &query_id);
 
         if(!first_packet_received){
+            printf("First packet of comm\n");
+
             // We received a destination file path - decode and save it
             handle_first_payload(payload_b64);
 
@@ -426,6 +445,8 @@ int main(int argc, char **argv){
             first_packet_received = 1;
 
         }else if(strlen(payload_b64)){
+            printf("Another payload\n");
+
             // Trigger chunk received event
             dns_receiver__on_chunk_received(&(client.sin_addr), DST_PATH, query_id, strlen(payload_b64));
 
@@ -434,6 +455,7 @@ int main(int argc, char **argv){
             handle_next_payload(payload_b64);
 
         }else{
+            printf("Fin message\n");
             // If the message is empty, it is the fin message (connection
             // close)
             handle_fin_msg();
@@ -443,8 +465,9 @@ int main(int argc, char **argv){
 
         // Send confirmation response - the same packet as received but
         // with "reponse" flag set (first bit of 16bit flags = 32768 decimal)
-        ((struct dns_header_t *)buffer)->flags += (u_int16_t)htons(32768); 
-        int sent_len = sendto(sock, &buffer, buffer_len, MSG_CONFIRM, (struct sockaddr *)&client, client_len);
+        ((struct dns_header_t *)buffer)->flags += (uint16_t)htons(32768); 
+        int sent_len = sendto(sock, &buffer, buffer_len, 0x800, (struct sockaddr *)&client, client_len);
+        //                                               0x800 = MSG_CONFIRM
     }
 
     // Clear resources

@@ -8,6 +8,7 @@
 
 // Standard libraries
 #include <stdlib.h>
+#include <stdint.h>
 
 
 /**
@@ -15,12 +16,12 @@
  * Taken from: https://opensource.apple.com/source/netinfo/netinfo-208/common/dns.h.auto.html
  */
 struct dns_header_t{
-    u_int16_t xid;
-    u_int16_t flags;
-    u_int16_t qdcount;
-    u_int16_t ancount;
-    u_int16_t nscount;
-    u_int16_t arcount;
+    uint16_t xid;
+    uint16_t flags;
+    uint16_t qdcount;
+    uint16_t ancount;
+    uint16_t nscount;
+    uint16_t arcount;
 };
 
 

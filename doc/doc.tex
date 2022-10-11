@@ -1,0 +1,250 @@
+%! Author = Patrik Skaloš
+
+
+% Preamble
+\documentclass[a4paper]{article}
+
+
+% Packages
+% \usepackage[utf8]{inputenc}
+\usepackage[czech]{babel}
+% \usepackage[T1]{fontenc}
+\usepackage[total={18cm, 25cm}]{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{hyperref}
+% \usepackage{graphicx}
+
+% Title
+\title{Tunelovanie dátových prenosov protokolom DNS}
+\author{Patrik Skaloš}
+% \date{}
+
+
+% Document
+\begin{document}
+
+  \renewcommand{\contentsname}{Obsah}
+
+  \maketitle
+
+  \tableofcontents
+
+
+
+  \section{Úvod}
+
+  \subsection{Protokol DNS}
+
+  DNS (\emph{Domain Name System}) je protokol používaný na preklad doménového
+  mena (napr. \emph{www.example.com}) na IP adresu použiteľnú na prístup k
+  obsahu uloženého pod touto doménou. Klient, ak chce k tomtu obsahu pristúpiť,
+  musí najprv poslať požiadavku (\emph{query}) DNS serveru, ktorý na požiadavku
+  odpovie IP adresou, ak má v svojej databázi záznam so žiadaným doménovým
+  menom. V opačnom prípade je potrebné požiadavku poslať DNS serveru vyššej
+  úrovne.
+
+
+  \subsection{Tunelovanie dát cez DNS}
+
+  Tunelovanie dát protokolom DNS (ďalej DNS tunelovanie) je metóda enkapsulácie
+  dát do DNS datagramu (paketu). 
+
+  Klientské zariadenie môže mať ten najprísnejší firewall, no ak má
+  povolené datagramy (pakety) DNS, využitím DNS tunelovania je možné medzi ním
+  a serverom vytvoriť komunikačný kanál, keďže bude komunikácia vedená čisto cez
+  požiadavaky a odpovede podľa protokolu DNS.
+
+  Príklad otázky v DNS požiadavke obsahujúcej nezakódované dáta - užívateľské
+  meno \emph{username} a heslo \emph{password}:
+  \textbf{username.password.example.com}
+
+  \textbf{Poznámka}: Podľa štandardu
+  \emph{RFC1035}\footnote{\href{https://www.ietf.org/rfc/rfc1035.txt}{RFC1035:
+  https://www.ietf.org/rfc/rfc1035.txt}} musí doménový štítok (\emph{angl.
+    label} - časť domény ohraničená bodkou, začiatkom alebo koncom domény)
+    začínať písmenom, končiť písmenom alebo číslom a obsahovať iba písmená,
+    čísla a pomlčku. To je jeden z dôvodov, prečo sa dáta enkapsulované v URL
+    požiadavke enkódujú do formátu obsahujúceho iba povolené znaky.
+
+
+  \subsection{Prečo DNS tunelovanie funguje}
+
+  Ak chce klient používať protokol DNS, nemôže ho, samozrejme, zakázať. Jedinou
+  ochranou pred DNS tunelovaním potom ostáva rozbaľovať DNS datagramy (pakety)
+  a filtrovať ich podľa požiadavky. Môže však byť veľmi náročné určiť, či je
+  požiadavka dôveryhodná alebo nie.
+
+
+
+  \section{Impementácia}
+
+  \subsection{Klient}
+
+  Klient (po spracovaní argumentov) prečíta a uloží všetky vstupné dáta zo
+  štandardného vstupu alebo súboru, podľa argumentov spustenia. Tieto dáta
+  následne zakóduje do formátu \textit{base64} a je pripravený na ich
+  odoslanie.
+
+  Na prenos dát klient používa iba protokol \textit{UDP} (User Datagram
+  Protocol), ktorý je známy svojou nespoľahlivosťou. V tomto protokole
+  odosielateľ jednoducho pošle svoje dáta, pričom ich doručenie nie je zaistené
+  a o doručení odosielateľ žiadne potvrdenie nedostane. Keďže je pre nás
+  dôležité, aby serveru dáta prišli v poriadku (a všetky), bolo potrebné
+  implementovať lepší mechanizmus prenosu dát. Tento mechanizmus je popísaný v
+  podsekcii \hyperref[label]{Komunikácia: Prenos dát medzi klientom a
+  serverom}.
+
+  \textbf{Poznámka}: Formát Base64 je sada 64 znakov (ktoré sa vojdú do 6
+  bitov) určená hlavne na zakódovanie dát, ktoré by mali obsahovať iba
+  tlačiteľné znaky (\textit{angl. printable characters}). Pozostáva z 26 malých
+  a 26 veľkých písmen abecedy, desiatich cifier a znakov \verb|+| a \verb|/|.
+
+
+  \subsection{Server}
+  Server po spracovaní argumentov začína naslúchať na porte 53 (predvolený port
+  pre DNS komunikáciu) a kým nie je program zastavený, v slučke prijíma
+  datagramy od klienta. Po prijatí všetkých dát (zakódovaných do formátu
+  \textit{base64}) ich dekóduje a zapíše do výstupného súboru, ktorý je tvorený
+  povinným parametrom \textit{DST\_FILEPATH} (ktorý značí priečinok, do ktorého
+  sa dáta uložia) a relatívnou cestou prijatou od klienta. Proces komunikácie
+  je podrobnejšie popísaný v nasledujúcej sekcii.
+
+
+  \subsection{Komunikácia}
+
+  \subsubsection{Enkódovanie dát do DNS otázky}
+
+  Podľa \textit{RFC1035}, doména v DNS otázke môže obsahovať až štyri štítky, z
+  ktorých dva posledné štítky (doménové meno a doména najvyššej úrovne -
+  \textit{angl. extension}) sú definované parametrom (klienta aj serveru)
+  \textit{BASE\_HOST}.  Ostávajú nám teda dva štítky pre naše dáta, pričom
+  ďalej \textit{RFC1035} stanovuje, že štítok môže mať maximálnu dĺžku 63 bajtov.
+  Do jedného DNS datagramu nám teda vojde 126 bajtov. Keďže dáta kódujeme do
+  formátu \textit{base64}, ktorý dáta nafúkne na $\frac{4}{3}$ pôvodnej
+  veľkosti, do datagramu sa vojde približne 94 bajtov užívateľkých dát.
+
+  Dva príklady enkódovania dát do \textit{base64} a do doménového mena pri
+  parametri \textit{BASE\_HOST = xskalo01.com}:
+  \begin{itemize}
+    \item 
+      \begin{itemize}
+        \item Uživateľské dáta: \verb|Ahoj|
+        \item Base64: \verb|QWhvag|
+        \item Doména v DNS otázke: \verb|QWhvag.xskalo01.com|
+      \end{itemize}
+    \item 
+      \begin{itemize}
+        \item Uživateľské dáta: \verb|01234567890123456789012345678901234567890123456789|
+        \item Base64: \verb|MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODk|
+        \item Doména v DNS otázke: \verb|MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY| \\ 
+          \verb|.3ODk.xskalo01.com|
+      \end{itemize}
+  \end{itemize}
+
+
+  \subsubsection{Prenos dát medzi klientom a serverom}
+  \label{label}
+
+  Do prvej správy jednej komunikácie sa vždy zakóduje iba relatívna cesta
+  udávajúca, kam má server uložiť dáta, ktoré nasledujú. Predpokladáme, teda,
+  že táto cesta (zakódovaná) bude kratšia ako 126 bajtov, čo v niektorých
+  prípadoch nemusí byť dosť, no nám to postačí.
+
+  Do nasledujúcich datagramov sa vkladajú zakódované dáta - vždy maximálne 126
+  bajtov (znakov). Server tieto dáta postupne ukladá do RAM a dekóduje ich až
+  na konci komunikácie.
+
+  Posledná správa, značiaca koniec komunikácie, neobsahuje žiadne zo
+  zakódovaných dát. Doména v DNS otázke sa teda rovná argumentu
+  \textit{BASE\_HOST}. Tento spôsob nie je efektívny a zvolili sme si ho iba
+  kvôli jednoduchosti implementácie.
+
+  Ako sme už naznačili, UDP nie je spoľahlivý komunikačný protokol. Z toho
+  dôvodu server na každú prijatú správu klientovi odpovedá za účelom potvrdenia
+  prijatia rovnakým datagramom, ako prijal, s jedinou zmenou - v hlavičke DNS
+  požiadavke nastaví príznak \textit{odpoveď} (\textit{angl. response}). Časový
+  limit na obdržanie potvrdenia o prijatí je nastavený na 100 ms. V prípade, že
+  klient neobdrží potvrdenie o prijatí, komunikácia musí byť ukončená a začatá
+  odznovu. Aby sa klient nezasekol pri odosielaní dát nenaslúchajúcemu serveru,
+  použili sme premennú \textit{MAX\_TRIES}, ktorá je štandardne nastavená na 3
+  a definuje počet pokusov na odosielanie jedného súboru a zároveň počet
+  pokusov na odoslanie datagramu ukončujúceho komunikáciu.
+
+  \begin{samepage}
+    Poradie komunikácie v prípade, že klientovi nie je doručené potvrdenie o prijatí:
+  \begin{enumerate}
+    \item Klient odošle datagram serveru a nedostane odpoveď
+    \item Klient sa pokúsi predčasne uzavrieť komunikáciu odoslaním požiadavky
+      bez dát (ukončujúca požiadavka)
+    \item Ak sa uzavretie komunikácie nepodarilo (server nepotvrdil prijatie,
+      resp. potvrdenie nebolo klientovi doručené) a o uzavretie komunikácie sa
+      program pokúsil menej ako \textit{MAX\_TRIES} krát, pokračuje krokom 2.
+    \item Ak sa uzavretie komunikácie nepodarilo ani na posledný pokus, kanál
+      medzi klientom a serverom je nefunkčný, prenos dát zlyhal a program
+      klienta je ukončený s chybovou hláškou.
+    \item Ak sa predčasné uzavretie komunikácie podarilo, môžeme sa znovu
+      pokúsiť odoslať dáta serveru. Začína sa znovu, od prvej požiadavky
+      obsahujúcej cieľovú cestu. V prípade, že prenos dát zlyhal už
+      \textit{MAX\_TRIES} krát, program klienta je ukončený s chybovou hláškou.
+  \end{enumerate}
+  \end{samepage}
+      
+
+  \subsection{Nedostatky, obmedzenia a rozšírenia}
+  Nasleduje neúplný zoznam nedostatkov, obmedzení a možných rozšírení našej
+  implementácie (väčšina z nich vyplýva zo zamerania sa na jednoduchosť):
+  \begin{itemize}
+    \item Kódovanie dát do formátu \textit{base64} znamená, že (len v prípade
+      kódovania binárnych dát) sa v DNS otázke môžu vyskytovať znaky \verb|+| a
+      \verb|/|, ktoré však podľa \textit{RFC1035} v doméne nie sú povolené.
+      Takéto DNS požiadavky sme pri testovaní odosielali aj na bežné DNS
+      servery, ktoré s tým, kupodivu, nemali problém. Z toho dôvodu sme
+      implementáciu neprarábali a naďalej kódujeme do \textit{base64}, no
+      určite by bolo dobrým nápadom kódovať do formátu, ktorý obsahuje iba
+      písmená (veľké aj malé), čo by bez problémov vyhovovalo štandardu. Našim
+      nápadom bolo implementovať vlastný \textit{base48}, ktorý by dáta
+      enkódoval len na malé a veľké písmená abecedy. Riešilo by to viac
+      problémov nášho projektu s \textit{RFC1035}
+    \item Dáta sú síze zakódované, no nie sú zašifrované! Ktokoľvek, kto odchytí
+      naše datagramy by dokázal vcelku ľahko dekódovať dáta, ktoré odosielame.
+    \item Odhalenie toho, že datagramy, ktoré posielame, nie sú reálne DNS
+      požiadavky by bolo vcelku jednoduché, keďže v každej DNS otázke využívame
+      priestor do plnej miery (maximálnych 126 bajtov v doméne) a potvrdenia o
+      prijatí sú nezmyselné.
+    \item Prenos veľkých súborov, alebo aj menších súborov po menej stabilnej
+      môže ľahko zlyhať z dôvodu použitia UDP protokolu a iba jednoduchého
+      mechanizmu zaistenia prenosu.
+    \item Prenos dát je z dôvodu veľkej réžie neefektívny.
+    \item Dĺžka reťazca označujúci relatívnu cestu pre uloženie súboru môže byť
+      dlhá maximálne (približne) 94 bajtov (znakov).
+    \item Celý odosielaný súbor či prijaté dáta sú uložené do RAM, preto naša
+      implementácia nie je vhodná pre prenos veľkých súborov.
+    \item \ldots
+  \end{itemize}
+
+
+
+  \section{Testovanie}
+
+  Testovanie programov klienta a serveru prebiehali manuálne aj automaticky,
+  na našom zariadení s operačným systémom \textit{Debian 11} aj na školskom
+  serveri s operačným systémom \textit{FreeBSD 13}.
+
+
+  \subsection{Manuálne testovanie}
+
+  Programy klienta aj serveru boli manuálne otestované s rôznymi argumentmi a 
+  vstupmi s rôznou dĺžkou aj typom (binárne aj textové dáta).
+
+
+  \subsection{Testovací skript}
+
+  Na to, aby sme otestovali prenos čo najviac rôznych kombinácií dát, sme
+  vytvorili jednoduchý skript v jazyku \textit{python}. Skript generoval
+  náhodné ASCII znaky náhodnej dĺžky, zapísal ich do súboru a spustil program
+  klienta. Po konci behu programu skontroluje, či je vstupný súbor identický
+  so súborom vytvoreným serverom.
+
+
+
+\end{document}

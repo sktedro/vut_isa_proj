@@ -5,11 +5,14 @@
  * @year 2022
  */
 
+
 // Standard libraries
 #include <stdlib.h>
+#include <stdint.h>
 
 // Networking libraries
 #include <arpa/inet.h>
+#include <netinet/in.h>
 
 
 /**
@@ -17,12 +20,12 @@
  * https://opensource.apple.com/source/netinfo/netinfo-208/common/dns.h.auto.html
  */
 struct dns_header_t{
-    u_int16_t xid;
-    u_int16_t flags;
-    u_int16_t qdcount;
-    u_int16_t ancount;
-    u_int16_t nscount;
-    u_int16_t arcount;
+    uint16_t xid;
+    uint16_t flags;
+    uint16_t qdcount;
+    uint16_t ancount;
+    uint16_t nscount;
+    uint16_t arcount;
 };
 
 
@@ -31,8 +34,8 @@ struct dns_header_t{
  * https://opensource.apple.com/source/netinfo/netinfo-208/common/dns.h.auto.html
  */
 struct dns_question_info_t{
-    u_int16_t type;
-    u_int16_t class;
+    uint16_t type;
+    uint16_t class;
 };
 
 

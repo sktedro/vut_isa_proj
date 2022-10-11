@@ -31,5 +31,10 @@ run_receiver: receiver
 	sudo ./${RECV_FILE_PATH} tedro.com ./data
 
 
+clean:
+	rm ${SEND_FILE_PATH}
+	rm ${RECV_FILE_PATH}
+	rm -rf data
+
 pack:
 	@echo "TODO"
