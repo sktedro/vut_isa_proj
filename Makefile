@@ -32,9 +32,18 @@ run_receiver: receiver
 
 
 clean:
-	rm ${SEND_FILE_PATH}
-	rm ${RECV_FILE_PATH}
+	rm -f ${SEND_FILE_PATH}
+	rm -f ${RECV_FILE_PATH}
 	rm -rf data
+	rm -rf xskalo01
+	rm -f xskalo01.tar.gz
 
-pack:
-	@echo "TODO"
+pack: clean
+	mkdir xskalo01
+	mkdir xskalo01/sender
+	mkdir xskalo01/receiver
+	cp receiver/receiver.* xskalo01/receiver/
+	cp sender/sender.* xskalo01/sender/
+	cp doc/doc.pdf xskalo01/dokumentace.pdf
+	tar -czvf xskalo01.tar.gz xskalo01/receiver/ xskalo01/sender/ xskalo01/dokumentace.pdf
+	rm -rf xskalo01

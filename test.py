@@ -1,7 +1,7 @@
 import os
 import random
 
-os.system("make")
+#  os.system("make")
 os.system("mkdir -p data")
 
 counter = 0
@@ -11,7 +11,7 @@ while True:
     length = random.choice(
             [random.randrange(0, 100), 
                 random.randrange(0, 1000), 
-                #  random.randrange(0, 1000000)
+                random.randrange(0, 1000000)
                 ])
 
     for i in range(length):

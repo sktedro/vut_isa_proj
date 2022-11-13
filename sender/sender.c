@@ -203,7 +203,7 @@ void parse_args(int argc, char **argv){
                 SRC_FILEPATH = argv[i];
 
             }else{
-                fprintf(stderr, "Redundant argument provided: \"%s\". Ignoring.", argv[i]);
+                fprintf(stderr, "Redundant argument provided: \"%s\". Ignoring.\n", argv[i]);
             }
 
             positional_arg_count += 1;
@@ -348,13 +348,6 @@ void create_packet(unsigned char *buffer, int *buffer_len, char *data, int len){
     unsigned char *question_tmp_ptr = &buffer[sizeof(struct dns_header_t)];
 
     if(data){
-
-        printf("Encapsulating ", data);
-        for(int i = 0; i < len; i++){
-            printf("%c", data[i]);
-        }
-        printf("\n");
-
         // If data is not NULL, put it to two labels
 
         int len1 = len > 63 ? 63 : len;
@@ -397,7 +390,6 @@ void create_packet(unsigned char *buffer, int *buffer_len, char *data, int len){
         // Otherwise, put a.a.BASE_HOST to the question as an empty message
         // which will signal end of communication
 
-        printf("Sending fin msg\n");
         // Label 1
         *question_tmp_ptr = (unsigned char)1;
         question_tmp_ptr += 1;
@@ -660,7 +652,7 @@ int main(int argc, char **argv){
     free(PAYLOAD_B64);
 
     if(ret_val){
-        fprintf(stderr, "Could not transmit data. Is the server listening?");
+        fprintf(stderr, "Could not transmit data. Is the server listening?\n");
     }
 
     return ret_val;

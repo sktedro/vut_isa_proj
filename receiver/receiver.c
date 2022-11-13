@@ -357,7 +357,6 @@ void handle_fin_msg(){
 
     // Save to file
     FILE *f = fopen(DST_PATH, "wb");
-    printf("%s\n", DST_PATH);
     if(!f){
         err("Could not open destination file");
     }
@@ -435,7 +434,7 @@ int main(int argc, char **argv){
         get_payload(payload_b64, buffer, buffer_len, &query_id);
 
         if(!first_packet_received){
-            printf("First packet of comm\n");
+            // First packet of comm
 
             // We received a destination file path - decode and save it
             handle_first_payload(payload_b64);
@@ -445,7 +444,7 @@ int main(int argc, char **argv){
             first_packet_received = 1;
 
         }else if(strlen(payload_b64)){
-            printf("Another payload\n");
+            // Another payload containing encoded data
 
             // Trigger chunk received event
             dns_receiver__on_chunk_received(&(client.sin_addr), DST_PATH, query_id, strlen(payload_b64));
@@ -455,7 +454,6 @@ int main(int argc, char **argv){
             handle_next_payload(payload_b64);
 
         }else{
-            printf("Fin message\n");
             // If the message is empty, it is the fin message (connection
             // close)
             handle_fin_msg();
