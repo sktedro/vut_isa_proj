@@ -44,6 +44,7 @@ pack: clean
 	mkdir xskalo01/receiver
 	cp receiver/receiver.* xskalo01/receiver/
 	cp sender/sender.* xskalo01/sender/
+	cp Makefile xskalo01/
 	cp doc/doc.pdf xskalo01/dokumentace.pdf
-	tar -czvf xskalo01.tar.gz xskalo01/receiver/ xskalo01/sender/ xskalo01/dokumentace.pdf
+	tar -czvf xskalo01.tar.gz xskalo01/receiver/ xskalo01/sender/ xskalo01/dokumentace.pdf xskalo01/Makefile
 	rm -rf xskalo01
