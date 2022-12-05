@@ -1,6 +1,6 @@
 /**
  * @brief Receiver for DNS tunneling
- * @file receiver.c
+ * @file dns_receiver.c
  * @author Patrik Skaloš
  * @year 2022
  */
@@ -20,7 +20,7 @@
 #include <sys/socket.h>
 
 // Header files
-#include "receiver.h"
+#include "dns_receiver.h"
 #include "dns_receiver_events.h"
 
 

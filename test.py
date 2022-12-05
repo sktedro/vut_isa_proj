@@ -22,7 +22,7 @@ while True:
     with open("./data/orig", "w") as f:
         f.write(string)
 
-    os.system("./sender/sender -u 127.0.0.1 tedro.com data ./data/orig > /dev/null 2>&1")
+    os.system("./sender/dns_sender -u 127.0.0.1 tedro.com data ./data/orig > /dev/null 2>&1")
 
     if os.system("diff ./data/orig ./data/data > /dev/null"):
         print()

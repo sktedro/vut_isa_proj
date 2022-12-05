@@ -1,6 +1,6 @@
 /**
  * @brief Receiver for DNS tunneling
- * @file receiver.h
+ * @file dns_receiver.h
  * @author Patrik Skaloš
  * @year 2022
  */

@@ -1,6 +1,6 @@
 /**
  * @brief Sender for DNS tunneling
- * @file sender.c
+ * @file dns_sender.c
  * @author Patrik Skaloš
  * @year 2022
  */
@@ -19,7 +19,7 @@
 #include <sys/socket.h>
 
 // Header files
-#include "sender.h"
+#include "dns_sender.h"
 #include "dns_sender_events.h"
 
 

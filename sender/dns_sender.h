@@ -1,6 +1,6 @@
 /**
  * @brief Sender for DNS tunneling
- * @file sender.h
+ * @file dns_sender.h
  * @author Patrik Skaloš
  * @year 2022
  */
